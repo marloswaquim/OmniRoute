@@ -532,6 +532,12 @@ export class BaseExecutor {
             "X-Claude-Code-Session-Id": randomUUID(),
           };
           Object.assign(headers, ccHeaders);
+          // Remove Title-Case variants from provider config that are now duplicated
+          // by the lowercase keys in ccHeaders (fetch joins case-insensitive dupes with ", ")
+          delete headers["Anthropic-Version"];
+          delete headers["Anthropic-Beta"];
+          delete headers["Anthropic-Dangerous-Direct-Browser-Access"];
+          delete headers["X-App"];
           delete headers["X-Stainless-Helper-Method"];
 
           // Add X-Stainless headers to match real Claude Code
