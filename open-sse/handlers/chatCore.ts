@@ -1344,7 +1344,37 @@ export async function handleChatCore({
 
   const normalizeClaudeUpstreamMessages = (payload: Record<string, unknown>) => {
     if (!Array.isArray(payload.messages)) return;
-    const messages = payload.messages as ClaudeMessage[];
+    let messages = payload.messages as ClaudeMessage[];
+
+    // Anthropic's Messages API rejects messages with role="system" — system
+    // content belongs in the top-level `system` parameter. Promote and drop.
+    const systemMessages = messages.filter((m) => m.role === "system");
+    if (systemMessages.length > 0) {
+      const extraBlocks: ClaudeContentBlock[] = [];
+      for (const sm of systemMessages) {
+        if (typeof sm.content === "string" && sm.content.length > 0) {
+          extraBlocks.push({ type: "text", text: sm.content });
+        } else if (Array.isArray(sm.content)) {
+          for (const block of sm.content as ClaudeContentBlock[]) {
+            if (block?.type === "text" && typeof block.text === "string" && block.text.length > 0) {
+              extraBlocks.push(block);
+            }
+          }
+        }
+      }
+      if (extraBlocks.length > 0) {
+        const existingSystem = payload.system;
+        if (typeof existingSystem === "string" && existingSystem.length > 0) {
+          payload.system = [{ type: "text", text: existingSystem }, ...extraBlocks];
+        } else if (Array.isArray(existingSystem)) {
+          payload.system = [...(existingSystem as ClaudeContentBlock[]), ...extraBlocks];
+        } else {
+          payload.system = extraBlocks;
+        }
+      }
+      messages = messages.filter((m) => m.role !== "system");
+      payload.messages = messages;
+    }
 
     // Anthropic rejects empty text blocks in native Messages payloads.
     // Anthropic also rejects thinking/redacted_thinking blocks with empty signatures —
