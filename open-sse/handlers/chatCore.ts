@@ -1347,12 +1347,19 @@ export async function handleChatCore({
     const messages = payload.messages as ClaudeMessage[];
 
     // Anthropic rejects empty text blocks in native Messages payloads.
+    // Anthropic also rejects thinking/redacted_thinking blocks with empty signatures —
+    // these appear when SSE translation loses the upstream signature.
     for (const msg of messages) {
       if (Array.isArray(msg.content)) {
-        msg.content = msg.content.filter(
-          (block: ClaudeContentBlock) =>
-            block.type !== "text" || (typeof block.text === "string" && block.text.length > 0)
-        );
+        msg.content = msg.content.filter((block: ClaudeContentBlock) => {
+          if (block.type === "text") {
+            return typeof block.text === "string" && block.text.length > 0;
+          }
+          if (block.type === "thinking" || block.type === "redacted_thinking") {
+            return typeof block.signature === "string" && block.signature.length > 0;
+          }
+          return true;
+        });
       }
     }
 
@@ -1391,21 +1398,7 @@ export async function handleChatCore({
         }
 
         if (block.type === "tool_result") {
-          const toolId = block.tool_use_id ?? block.id ?? "unknown";
-          const resultContent = block.content ?? block.text ?? block.output ?? "";
-          const resultText =
-            typeof resultContent === "string"
-              ? resultContent
-              : Array.isArray(resultContent)
-                ? resultContent
-                    .filter((c: Record<string, unknown>) => c.type === "text")
-                    .map((c: Record<string, unknown>) => c.text)
-                    .join("\n")
-                : JSON.stringify(resultContent);
-          if (resultText.length > 0) {
-            return [{ type: "text", text: `[Tool Result: ${toolId}]\n${resultText}` }];
-          }
-          return [];
+          return [block];
         }
 
         log?.debug?.("CONTENT", `Dropped unsupported content part type="${block.type}"`);
