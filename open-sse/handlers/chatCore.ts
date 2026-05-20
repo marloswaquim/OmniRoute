@@ -2554,6 +2554,52 @@ export async function handleChatCore({
     content?: unknown;
   };
 
+  // Minimal normalizer used in Claude Code semantic passthrough where broader
+  // normalization is intentionally skipped to preserve cache markers and tool
+  // shapes — but role="system" and empty-signature thinking blocks still
+  // trigger Anthropic 400s and must always be cleaned up.
+  const promoteSystemRoleAndCleanThinking = (payload: Record<string, unknown>) => {
+    if (!Array.isArray(payload.messages)) return;
+    let messages = payload.messages as ClaudeMessage[];
+
+    const systemMessages = messages.filter((m) => m.role === "system");
+    if (systemMessages.length > 0) {
+      const extraBlocks: ClaudeContentBlock[] = [];
+      for (const sm of systemMessages) {
+        if (typeof sm.content === "string" && sm.content.length > 0) {
+          extraBlocks.push({ type: "text", text: sm.content });
+        } else if (Array.isArray(sm.content)) {
+          for (const block of sm.content as ClaudeContentBlock[]) {
+            if (block?.type === "text" && typeof block.text === "string" && block.text.length > 0) {
+              extraBlocks.push(block);
+            }
+          }
+        }
+      }
+      if (extraBlocks.length > 0) {
+        const existingSystem = payload.system;
+        if (typeof existingSystem === "string" && existingSystem.length > 0) {
+          payload.system = [{ type: "text", text: existingSystem }, ...extraBlocks];
+        } else if (Array.isArray(existingSystem)) {
+          payload.system = [...(existingSystem as ClaudeContentBlock[]), ...extraBlocks];
+        } else {
+          payload.system = extraBlocks;
+        }
+      }
+      messages = messages.filter((m) => m.role !== "system");
+      payload.messages = messages;
+    }
+
+    for (const msg of messages) {
+      if (!Array.isArray(msg.content)) continue;
+      msg.content = (msg.content as ClaudeContentBlock[]).filter((block) => {
+        if (block?.type !== "thinking" && block?.type !== "redacted_thinking") return true;
+        const sig = block.signature;
+        return typeof sig === "string" && sig.length > 0;
+      });
+    }
+  };
+
   const normalizeClaudeUpstreamMessages = (
     payload: Record<string, unknown>,
     options?: { preserveToolResultBlocks?: boolean }
@@ -2722,6 +2768,11 @@ export async function handleChatCore({
       if (!isClaudeCodeSemanticPassthrough) {
         normalizeClaudeUpstreamMessages(translatedBody, { preserveToolResultBlocks: true });
       } else {
+        // Semantic passthrough skips broader normalization, but Anthropic still
+        // rejects role="system" messages and empty-signature thinking blocks.
+        // Promote system messages to the top-level `system` parameter and drop
+        // empty-signature thinking blocks so the upstream call doesn't 400.
+        promoteSystemRoleAndCleanThinking(translatedBody);
         log?.debug?.("FORMAT", "claude-code semantic passthrough enabled");
       }
 
