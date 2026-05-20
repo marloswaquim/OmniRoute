@@ -249,7 +249,7 @@ export function buildClaudeCodeCompatibleRequest({
       ? extractClaudeBodyFromSource(sourceBody, preserveCacheControl)
       : null;
   const effectiveClaudeBody = preparedClaudeBody || extractedClaudeBody;
-  const messages = effectiveClaudeBody
+  let messages = effectiveClaudeBody
     ? preserveClaudeMessages && preparedClaudeBody
       ? cloneClaudeCodeCompatibleMessagesFromClaude(
           effectiveClaudeBody.messages as MessageLike[],
@@ -260,9 +260,43 @@ export function buildClaudeCodeCompatibleRequest({
           preserveCacheControl
         )
     : buildClaudeCodeCompatibleMessages(normalizedMessages);
+
+  // Anthropic's Messages API rejects messages with role="system" — system
+  // content belongs in the top-level `system` parameter. The semantic
+  // passthrough path (cloneClaudeCodeCompatibleMessagesFromClaude) preserves
+  // them as-is, so promote any inline system messages here.
+  const promotedSystemBlocks: Array<Record<string, unknown>> = [];
+  if (preserveClaudeMessages && Array.isArray(messages)) {
+    for (const msg of messages as MessageLike[]) {
+      if (!msg || String(msg.role || "").toLowerCase() !== "system") continue;
+      const content = msg.content;
+      if (typeof content === "string" && content.length > 0) {
+        promotedSystemBlocks.push({ type: "text", text: content });
+      } else if (Array.isArray(content)) {
+        for (const block of content as Array<Record<string, unknown>>) {
+          if (block?.type === "text" && typeof block.text === "string" && block.text.length > 0) {
+            promotedSystemBlocks.push({ ...block });
+          }
+        }
+      }
+    }
+    if (promotedSystemBlocks.length > 0) {
+      messages = (messages as MessageLike[]).filter(
+        (m) => String(m?.role || "").toLowerCase() !== "system"
+      );
+    }
+  }
+
+  const baseSystemBlocks = effectiveClaudeBody?.system as
+    | Record<string, unknown>[]
+    | undefined;
+  const mergedSystemBlocks =
+    promotedSystemBlocks.length > 0
+      ? [...(Array.isArray(baseSystemBlocks) ? baseSystemBlocks : []), ...promotedSystemBlocks]
+      : baseSystemBlocks;
   const system = buildClaudeCodeCompatibleSystemBlocks({
     messages: preserveClaudeMessages ? [] : normalizedMessages,
-    systemBlocks: effectiveClaudeBody?.system as Record<string, unknown>[] | undefined,
+    systemBlocks: mergedSystemBlocks,
     preserveCacheControl,
   });
   const resolvedSessionId = sessionId || randomUUID();
