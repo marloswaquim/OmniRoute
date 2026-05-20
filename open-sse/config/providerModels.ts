@@ -47,6 +47,13 @@ export function getModelTargetFormat(aliasOrId: string, modelId: string): string
   return found?.targetFormat || null;
 }
 
+export function getModelStripTypes(aliasOrId: string, modelId: string): string[] {
+  const models = PROVIDER_MODELS[aliasOrId];
+  if (!models) return [];
+  const found = models.find((m) => m.id === modelId);
+  return Array.isArray(found?.strip) ? [...found.strip] : [];
+}
+
 export function getModelsByProviderId(providerId: string): RegistryModel[] {
   const alias = PROVIDER_ID_TO_ALIAS[providerId] || providerId;
   return PROVIDER_MODELS[alias] || [];
@@ -54,5 +61,8 @@ export function getModelsByProviderId(providerId: string): RegistryModel[] {
 
 export function supportsXHighEffort(aliasOrId: string, modelId: string): boolean {
   const alias = PROVIDER_ID_TO_ALIAS[aliasOrId] || aliasOrId;
+  const providerModels = PROVIDER_MODELS[alias] || PROVIDER_MODELS[aliasOrId];
+  // Unknown provider (not in registry) — pass through unchanged.
+  if (!providerModels) return true;
   return getProviderModel(alias, modelId)?.supportsXHighEffort === true;
 }

@@ -80,6 +80,59 @@ test.after(() => {
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
+test("POST /api/combos persists names with spaces and square brackets", async () => {
+  const response = await createRoute.POST(
+    makeCreateRequest({
+      name: "Claude [1m]",
+      strategy: "priority",
+      models: [{ providerId: "claude", model: "claude-sonnet-4-6" }],
+    })
+  );
+  const body = (await response.json()) as any;
+  const stored = await combosDb.getComboByName("Claude [1m]");
+
+  assert.equal(response.status, 201);
+  assert.equal(body.name, "Claude [1m]");
+  assert.equal(stored?.name, "Claude [1m]");
+  assert.equal(stored?.models[0].model, "claude/claude-sonnet-4-6");
+});
+
+test("POST /api/combos rejects duplicate bracketed names", async () => {
+  await combosDb.createCombo({
+    name: "Claude [1m]",
+    models: [{ provider: "claude", model: "claude-sonnet-4-6" }],
+  });
+
+  const response = await createRoute.POST(
+    makeCreateRequest({
+      name: "Claude [1m]",
+      strategy: "priority",
+      models: [{ providerId: "claude", model: "claude-opus-4-6" }],
+    })
+  );
+  const body = (await response.json()) as any;
+
+  assert.equal(response.status, 400);
+  assert.equal(body.error, "Combo name already exists");
+});
+
+test("PUT /api/combos can rename a combo to a bracketed name", async () => {
+  const combo = await combosDb.createCombo({
+    name: "claude-plain",
+    models: [{ provider: "claude", model: "claude-sonnet-4-6" }],
+  });
+
+  const response = await comboRoute.PUT(makeUpdateRequest({ name: "Claude [1m]" }), {
+    params: Promise.resolve({ id: combo.id }),
+  });
+  const body = (await response.json()) as any;
+  const stored = await combosDb.getComboByName("Claude [1m]");
+
+  assert.equal(response.status, 200);
+  assert.equal(body.name, "Claude [1m]");
+  assert.equal(stored?.id, combo.id);
+});
+
 test("POST /api/combos rejects composite tiers that point to unknown steps", async () => {
   const response = await createRoute.POST(
     makeCreateRequest({
@@ -96,7 +149,7 @@ test("POST /api/combos rejects composite tiers that point to unknown steps", asy
       },
     })
   );
-  const body = await response.json();
+  const body = (await response.json()) as any;
 
   assert.equal(response.status, 400);
   assert.deepEqual(body, {
@@ -114,12 +167,12 @@ test("POST /api/combos rejects composite tiers that point to unknown steps", asy
 
 test("POST /api/combos persists valid composite tiers", async () => {
   const response = await createRoute.POST(makeCreateRequest(createTieredComboInput()));
-  const body = await response.json();
+  const body = (await response.json()) as any;
   const stored = await combosDb.getComboByName("tiered-codex");
 
   assert.equal(response.status, 201);
   assert.equal(body.config.compositeTiers.defaultTier, "primary");
-  assert.equal(stored.config.compositeTiers.tiers.primary.stepId, "step-primary");
+  assert.equal((stored.config as any).compositeTiers.tiers.primary.stepId, "step-primary");
   assert.equal(stored.models[0].id, "step-primary");
 });
 
@@ -137,7 +190,7 @@ test("POST /api/combos preserves legacy string combo refs during normalization",
       models: ["child-ref"],
     })
   );
-  const body = await response.json();
+  const body = (await response.json()) as any;
   const stored = await combosDb.getComboByName("parent-ref");
 
   assert.equal(response.status, 201);
@@ -164,7 +217,7 @@ test("PUT /api/combos rejects updates that orphan an existing composite tier ste
     }),
     { params: Promise.resolve({ id: combo.id }) }
   );
-  const body = await response.json();
+  const body = (await response.json()) as any;
 
   assert.equal(response.status, 400);
   assert.deepEqual(body, {
@@ -198,8 +251,8 @@ test("PUT /api/combos preserves legacy string combo refs during normalization", 
     }),
     { params: Promise.resolve({ id: combo.id }) }
   );
-  const body = await response.json();
-  const stored = await combosDb.getComboById(combo.id);
+  const body = (await response.json()) as any;
+  const stored = await combosDb.getComboById((combo as any).id);
 
   assert.equal(response.status, 200);
   assert.equal(body.models[0].kind, "combo-ref");

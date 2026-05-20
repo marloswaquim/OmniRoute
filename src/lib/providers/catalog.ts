@@ -1,7 +1,9 @@
 import {
   APIKEY_PROVIDERS,
   AUDIO_ONLY_PROVIDERS,
+  CLOUD_AGENT_PROVIDERS,
   FREE_PROVIDERS,
+  LOCAL_PROVIDERS,
   OAUTH_PROVIDERS,
   SEARCH_PROVIDERS,
   UPSTREAM_PROXY_PROVIDERS,
@@ -16,10 +18,12 @@ export type StaticProviderCatalogCategory =
   | "free"
   | "oauth"
   | "web-cookie"
+  | "local"
   | "search"
   | "audio"
   | "upstream-proxy"
-  | "apikey";
+  | "apikey"
+  | "cloud-agent";
 
 export interface ProviderCatalogMetadata {
   id: string;
@@ -101,6 +105,12 @@ export const STATIC_PROVIDER_CATALOG_GROUPS: Record<
     displayAuthType: "apikey",
     toggleAuthType: "apikey",
   },
+  local: {
+    category: "local",
+    providers: LOCAL_PROVIDERS as ProviderRecord,
+    displayAuthType: "apikey",
+    toggleAuthType: "apikey",
+  },
   search: {
     category: "search",
     providers: SEARCH_PROVIDERS as ProviderRecord,
@@ -125,21 +135,30 @@ export const STATIC_PROVIDER_CATALOG_GROUPS: Record<
     displayAuthType: "apikey",
     toggleAuthType: "apikey",
   },
+  "cloud-agent": {
+    category: "cloud-agent",
+    providers: CLOUD_AGENT_PROVIDERS as ProviderRecord,
+    displayAuthType: "apikey",
+    toggleAuthType: "apikey",
+  },
 };
 
 export const STATIC_PROVIDER_CATALOG_RESOLUTION_ORDER: StaticProviderCatalogCategory[] = [
   "free",
   "oauth",
   "web-cookie",
+  "local",
   "search",
   "audio",
   "upstream-proxy",
+  "cloud-agent",
   "apikey",
 ];
 
 const MANAGED_PROVIDER_CONNECTION_CATEGORIES = new Set<StaticProviderCatalogCategory>([
   "apikey",
   "web-cookie",
+  "local",
   "search",
   "audio",
 ]);

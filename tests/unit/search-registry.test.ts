@@ -19,7 +19,7 @@ const { computeCacheKey, getOrCoalesce, getCacheStats, SEARCH_CACHE_DEFAULT_TTL_
 
 // ─── Registry Tests ──────────────────────────────────────────
 
-test("SEARCH_PROVIDERS has all 9 providers", () => {
+test("SEARCH_PROVIDERS has all 11 providers", () => {
   assert.ok(SEARCH_PROVIDERS["serper-search"], "serper should exist");
   assert.ok(SEARCH_PROVIDERS["brave-search"], "brave should exist");
   assert.ok(SEARCH_PROVIDERS["perplexity-search"], "perplexity-search should exist");
@@ -28,8 +28,11 @@ test("SEARCH_PROVIDERS has all 9 providers", () => {
   assert.ok(SEARCH_PROVIDERS["google-pse-search"], "google-pse should exist");
   assert.ok(SEARCH_PROVIDERS["linkup-search"], "linkup should exist");
   assert.ok(SEARCH_PROVIDERS["searchapi-search"], "searchapi should exist");
+  assert.ok(SEARCH_PROVIDERS["youcom-search"], "youcom should exist");
   assert.ok(SEARCH_PROVIDERS["searxng-search"], "searxng should exist");
-  assert.equal(Object.keys(SEARCH_PROVIDERS).length, 9);
+  assert.ok(SEARCH_PROVIDERS["ollama-search"], "ollama-search should exist");
+  assert.ok(SEARCH_PROVIDERS["zai-search"], "zai should exist");
+  assert.equal(Object.keys(SEARCH_PROVIDERS).length, 12);
 });
 
 test("serper-search config is correct", () => {
@@ -60,6 +63,17 @@ test("perplexity-search config is correct", () => {
   assert.equal(p.costPerQuery, 0.005);
   assert.equal(p.freeMonthlyQuota, 0);
   assert.deepEqual(p.searchTypes, ["web"]);
+});
+
+test("ollama-search config is correct", () => {
+  const o = SEARCH_PROVIDERS["ollama-search"];
+  assert.equal(o.id, "ollama-search");
+  assert.equal(o.baseUrl, "https://ollama.com/api/web_search");
+  assert.equal(o.method, "POST");
+  assert.equal(o.authType, "apikey");
+  assert.equal(o.authHeader, "bearer");
+  assert.equal(o.maxMaxResults, 10);
+  assert.deepEqual(o.searchTypes, ["web"]);
 });
 
 test("getSearchProvider returns config for valid ID", () => {
@@ -108,6 +122,16 @@ test("searchapi-search config is correct", () => {
   assert.deepEqual(s.searchTypes, ["web", "news"]);
 });
 
+test("youcom-search config is correct", () => {
+  const y = SEARCH_PROVIDERS["youcom-search"];
+  assert.equal(y.id, "youcom-search");
+  assert.equal(y.method, "GET");
+  assert.equal(y.authHeader, "x-api-key");
+  assert.equal(y.baseUrl, "https://ydc-index.io/v1/search");
+  assert.equal(y.costPerQuery, 0.005);
+  assert.deepEqual(y.searchTypes, ["web", "news"]);
+});
+
 test("searxng-search config is correct", () => {
   const s = SEARCH_PROVIDERS["searxng-search"];
   assert.equal(s.id, "searxng-search");
@@ -117,9 +141,20 @@ test("searxng-search config is correct", () => {
   assert.deepEqual(s.searchTypes, ["web", "news"]);
 });
 
+test("zai-search config is correct", () => {
+  const z = SEARCH_PROVIDERS["zai-search"];
+  assert.equal(z.id, "zai-search");
+  assert.equal(z.method, "POST");
+  assert.equal(z.authHeader, "bearer");
+  assert.equal(z.baseUrl, "https://api.z.ai/api/mcp/web_search_prime/mcp");
+  assert.equal(z.costPerQuery, 0);
+  assert.equal(z.freeMonthlyQuota, 0);
+  assert.deepEqual(z.searchTypes, ["web"]);
+});
+
 test("getAllSearchProviders returns flat list", () => {
   const all = getAllSearchProviders();
-  assert.equal(all.length, 9);
+  assert.equal(all.length, 12);
   assert.ok(all.some((p) => p.id === "serper-search"));
   assert.ok(all.some((p) => p.id === "brave-search"));
   assert.ok(all.some((p) => p.id === "perplexity-search"));
@@ -128,7 +163,10 @@ test("getAllSearchProviders returns flat list", () => {
   assert.ok(all.some((p) => p.id === "google-pse-search"));
   assert.ok(all.some((p) => p.id === "linkup-search"));
   assert.ok(all.some((p) => p.id === "searchapi-search"));
+  assert.ok(all.some((p) => p.id === "youcom-search"));
   assert.ok(all.some((p) => p.id === "searxng-search"));
+  assert.ok(all.some((p) => p.id === "ollama-search"));
+  assert.ok(all.some((p) => p.id === "zai-search"));
   // Each entry should have id, name, searchTypes
   for (const p of all) {
     assert.ok(p.id);
@@ -323,7 +361,9 @@ test("v1SearchSchema accepts new search providers", async () => {
     "google-pse-search",
     "linkup-search",
     "searchapi-search",
+    "youcom-search",
     "searxng-search",
+    "ollama-search",
   ] as const;
 
   for (const provider of providers) {

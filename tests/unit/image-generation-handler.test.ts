@@ -54,10 +54,10 @@ test("handleImageGeneration routes OpenAI-compatible providers and forwards imag
   try {
     const result = await handleImageGeneration({
       body: {
-        model: "openai/dall-e-3",
+        model: "openai/gpt-image-2",
         prompt: "city skyline",
         n: 2,
-        size: "1024x1792",
+        size: "1024x1536",
         quality: "hd",
         response_format: "url",
         style: "vivid",
@@ -70,10 +70,10 @@ test("handleImageGeneration routes OpenAI-compatible providers and forwards imag
     assert.equal(captured.url, "https://api.openai.com/v1/images/generations");
     assert.equal(captured.headers.Authorization, "Bearer image-key");
     assert.deepEqual(captured.body, {
-      model: "dall-e-3",
+      model: "gpt-image-2",
       prompt: "city skyline",
       n: 2,
-      size: "1024x1792",
+      size: "1024x1536",
       quality: "hd",
       response_format: "url",
       style: "vivid",
@@ -123,6 +123,66 @@ test("handleImageGeneration uses synthetic OpenAI-compatible routing for resolve
       prompt: "retro poster",
     });
     assert.equal(result.data.data[0].b64_json, "ZmFrZQ==");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration polls KIE image tasks and returns URLs on success", async () => {
+  const originalFetch = globalThis.fetch;
+  let createPayload;
+  let pollUrl = "";
+
+  globalThis.fetch = async (url, options = {}) => {
+    const stringUrl = String(url);
+    if (stringUrl === "https://api.kie.ai/api/v1/gpt4o-image/generate") {
+      createPayload = JSON.parse(String(options.body || "{}"));
+      return new Response(JSON.stringify({ code: 200, data: { taskId: "kie-task-1" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    if (stringUrl.startsWith("https://api.kie.ai/api/v1/gpt4o-image/record-info")) {
+      pollUrl = stringUrl;
+      return new Response(
+        JSON.stringify({
+          code: 200,
+          data: {
+            status: "SUCCESS",
+            response: {
+              resultUrls: ["https://example.com/kie-image.png"],
+            },
+          },
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }
+      );
+    }
+
+    throw new Error(`Unexpected URL: ${stringUrl}`);
+  };
+
+  try {
+    const result = await handleImageGeneration({
+      body: {
+        model: "kie/gpt4o-image",
+        prompt: "city skyline at dusk",
+        size: "1:1",
+        n: 1,
+      },
+      credentials: { apiKey: "kie-key" },
+      log: null,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(createPayload.prompt, "city skyline at dusk");
+    assert.equal(createPayload.size, "1:1");
+    assert.equal(createPayload.nVariants, 1);
+    assert.match(pollUrl, /taskId=kie-task-1/);
+    assert.equal(result.data.data[0].url, "https://example.com/kie-image.png");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -250,32 +310,32 @@ test("handleImageGeneration treats unknown provider prefixes as invalid image mo
 
 test("image registry resolves flux aliases and exposes planned catalog aliases", () => {
   assert.deepEqual(parseImageModel("flux-kontext"), {
-    provider: "pollinations",
-    model: "flux-kontext",
+    provider: "black-forest-labs",
+    model: "flux-kontext-pro",
   });
   assert.deepEqual(parseImageModel("pollinations/kontext"), {
-    provider: "pollinations",
-    model: "flux-kontext",
+    provider: "black-forest-labs",
+    model: "flux-kontext-pro",
   });
-  assert.deepEqual(parseImageModel("flux-redux"), {
+  assert.deepEqual(parseImageModel("flux-2-dev"), {
     provider: "together",
-    model: "black-forest-labs/FLUX.1-redux",
+    model: "black-forest-labs/FLUX.2-dev",
   });
 
   const modelIds = new Set(getAllImageModels().map((model) => model.id));
-  const fluxRedux = getAllImageModels().find((model) => model.id === "flux-redux");
+  const flux2Dev = getAllImageModels().find((model) => model.id === "flux-2-dev");
   const fluxKontext = getAllImageModels().find((model) => model.id === "flux-kontext");
   for (const alias of [
     "flux-kontext",
     "flux-kontext-max",
-    "flux-redux",
-    "flux-depth",
-    "flux-canny",
-    "flux-dev-lora",
+    "flux-2-max",
+    "flux-2-pro",
+    "flux-2-flex",
+    "flux-2-dev",
   ]) {
     assert.equal(modelIds.has(alias), true, `Expected alias ${alias} in image catalog`);
   }
-  assert.deepEqual(fluxRedux?.inputModalities, ["text", "image"]);
+  assert.deepEqual(flux2Dev?.inputModalities, ["text", "image"]);
   assert.deepEqual(fluxKontext?.inputModalities, ["text", "image"]);
 });
 
@@ -354,7 +414,7 @@ test("handleImageGeneration routes Stability AI edit models to native endpoints"
       requestCapture = {
         url: stringUrl,
         headers: options.headers,
-        body: JSON.parse(String(options.body || "{}")),
+        body: options.body,
       };
 
       return new Response(JSON.stringify({ image: "c3RhYmlsaXR5LWltYWdl" }), {
@@ -383,10 +443,65 @@ test("handleImageGeneration routes Stability AI edit models to native endpoints"
     assert.equal(result.success, true);
     assert.equal(requestCapture.url, "https://api.stability.ai/v2beta/stable-image/edit/inpaint");
     assert.equal(requestCapture.headers.Authorization, "Bearer stability-key");
-    assert.equal(requestCapture.body.image, "BAU=");
-    assert.equal(requestCapture.body.mask, "AA==");
-    assert.equal(requestCapture.body.output_format, "png");
+    assert.equal(requestCapture.headers.Accept, "application/json");
+    assert.equal(requestCapture.headers["Content-Type"], undefined);
+    assert.ok(requestCapture.body instanceof FormData);
+    assert.equal(requestCapture.body.get("prompt"), "replace the sky with aurora");
+    assert.equal(requestCapture.body.get("negative_prompt"), "rain");
+    assert.equal(requestCapture.body.get("output_format"), "png");
+    assert.equal((requestCapture.body.get("image") as Blob).size, 2);
+    assert.equal((requestCapture.body.get("mask") as Blob).size, 1);
     assert.equal(result.data.data[0].b64_json, "c3RhYmlsaXR5LWltYWdl");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration sends Stability AI text generation as multipart form data", async () => {
+  const originalFetch = globalThis.fetch;
+  let requestCapture;
+
+  globalThis.fetch = async (url, options = {}) => {
+    const stringUrl = String(url);
+    if (stringUrl === "https://api.stability.ai/v2beta/stable-image/generate/core") {
+      requestCapture = {
+        url: stringUrl,
+        headers: options.headers,
+        body: options.body,
+      };
+
+      return new Response(JSON.stringify({ image: "c3RhYmlsaXR5LWNvcmU=" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    throw new Error(`Unexpected URL: ${stringUrl}`);
+  };
+
+  try {
+    const result = await handleImageGeneration({
+      body: {
+        model: "stability-ai/stable-image-core",
+        prompt: "city near beach",
+        size: "1024x1024",
+        response_format: "b64_json",
+      },
+      credentials: { apiKey: "stability-key" },
+      log: null,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(requestCapture.url, "https://api.stability.ai/v2beta/stable-image/generate/core");
+    assert.equal(requestCapture.headers.Authorization, "Bearer stability-key");
+    assert.equal(requestCapture.headers.Accept, "application/json");
+    assert.equal(requestCapture.headers["Content-Type"], undefined);
+    assert.ok(requestCapture.body instanceof FormData);
+    assert.equal(requestCapture.body.get("prompt"), "city near beach");
+    assert.equal(requestCapture.body.get("mode"), "text-to-image");
+    assert.equal(requestCapture.body.get("aspect_ratio"), "1:1");
+    assert.equal(requestCapture.body.get("output_format"), "png");
+    assert.equal(result.data.data[0].b64_json, "c3RhYmlsaXR5LWNvcmU=");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -575,7 +690,7 @@ test("handleImageGeneration uploads source images to Topaz and returns base64 ou
   }
 });
 
-test("handleImageGeneration transforms Gemini image responses from Antigravity", async () => {
+test("handleImageGeneration sends Antigravity image requests with native image_gen envelope", async () => {
   const originalFetch = globalThis.fetch;
   let captured;
 
@@ -588,13 +703,21 @@ test("handleImageGeneration transforms Gemini image responses from Antigravity",
 
     return new Response(
       JSON.stringify({
-        candidates: [
-          {
-            content: {
-              parts: [{ text: "revised prompt" }, { inlineData: { data: "YmFzZTY0LWdlbWluaQ==" } }],
+        response: {
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    thoughtSignature: "signature",
+                    inlineData: { mimeType: "image/jpeg", data: "YmFzZTY0LWdlbWluaQ==" },
+                  },
+                ],
+              },
             },
-          },
-        ],
+          ],
+          modelVersion: "gemini-3.1-flash-image",
+        },
       }),
       { status: 200, headers: { "content-type": "application/json" } }
     );
@@ -603,26 +726,168 @@ test("handleImageGeneration transforms Gemini image responses from Antigravity",
   try {
     const result = await handleImageGeneration({
       body: {
-        model: "antigravity/gemini-image-preview",
+        model: "antigravity/gemini-3.1-flash-image-preview",
         prompt: "painted beach",
+        size: "1024x1024",
+        aspect_ratio: "not-a-ratio",
       },
-      credentials: { accessToken: "ag-token" },
+      credentials: { accessToken: "ag-token", projectId: "project-123" },
       log: null,
     });
 
     assert.equal(result.success, true);
     assert.equal(
       captured.url,
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-image-preview:generateContent"
+      "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent"
     );
     assert.equal(captured.headers.Authorization, "Bearer ag-token");
-    assert.deepEqual(captured.body, {
-      contents: [{ parts: [{ text: "painted beach" }] }],
-      generationConfig: { responseModalities: ["TEXT", "IMAGE"] },
+    assert.equal(captured.headers["x-client-name"], "antigravity");
+    assert.equal(captured.headers["x-goog-user-project"], "project-123");
+    assert.ok(captured.headers["User-Agent"].startsWith("Antigravity/"));
+    assert.equal(captured.body.project, "project-123");
+    assert.match(captured.body.requestId, /^image_gen\//);
+    assert.equal(captured.body.model, "gemini-3.1-flash-image");
+    assert.equal(captured.body.userAgent, "antigravity");
+    assert.equal(captured.body.requestType, "image_gen");
+    assert.deepEqual(captured.body.request, {
+      contents: [{ role: "user", parts: [{ text: "painted beach" }] }],
+      generationConfig: {
+        candidateCount: 1,
+        imageConfig: { aspectRatio: "1:1" },
+      },
     });
     assert.deepEqual(result.data.data, [
-      { b64_json: "YmFzZTY0LWdlbWluaQ==", revised_prompt: "revised prompt" },
+      { b64_json: "YmFzZTY0LWdlbWluaQ==", revised_prompt: "painted beach" },
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration rejects Antigravity image requests without projectId", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("fetch should not be called without an Antigravity projectId");
+  };
+
+  try {
+    const result = await handleImageGeneration({
+      body: {
+        model: "antigravity/gemini-3.1-flash-image",
+        prompt: "painted forest",
+        size: "1024x1024",
+      },
+      credentials: { accessToken: "ag-token" },
+      log: null,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.status, 400);
+    assert.match(String(result.error), /Missing Google projectId/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration retries Antigravity image requests without billing project on 403", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({
+      url: String(url),
+      headers: options.headers,
+      body: JSON.parse(String(options.body || "{}")),
+    });
+
+    if (calls.length === 1) {
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 403,
+            message: "Cloud Code Private API has not been used in project project-123 before.",
+            status: "PERMISSION_DENIED",
+          },
+        }),
+        { status: 403, headers: { "content-type": "application/json" } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({
+        response: {
+          candidates: [
+            {
+              content: {
+                parts: [
+                  {
+                    inlineData: { mimeType: "image/jpeg", data: "YmFzZTY0LXJldHJ5" },
+                  },
+                ],
+              },
+            },
+          ],
+          modelVersion: "gemini-3.1-flash-image",
+        },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
+
+  try {
+    const result = await handleImageGeneration({
+      body: {
+        model: "antigravity/gemini-3.1-flash-image",
+        prompt: "painted forest",
+        size: "1024x1024",
+      },
+      credentials: { accessToken: "ag-token", projectId: "project-123" },
+      log: null,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].headers["x-goog-user-project"], "project-123");
+    assert.equal(calls[1].headers["x-goog-user-project"], undefined);
+    assert.equal(calls[1].body.project, "project-123");
+    assert.deepEqual(result.data.data, [
+      { b64_json: "YmFzZTY0LXJldHJ5", revised_prompt: "painted forest" },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration sanitizes Antigravity upstream error payloads", async () => {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        error: {
+          code: 500,
+          message:
+            "failed at /Users/backryun/OmniRoute/open-sse/handlers/imageGeneration.ts:1\nstack",
+          status: "INTERNAL",
+        },
+      }),
+      { status: 500, headers: { "content-type": "application/json" } }
+    );
+
+  try {
+    const result = await handleImageGeneration({
+      body: {
+        model: "antigravity/gemini-3.1-flash-image",
+        prompt: "painted forest",
+        size: "1024x1024",
+      },
+      credentials: { accessToken: "ag-token", projectId: "project-123" },
+      log: null,
+    });
+
+    assert.equal(result.success, false);
+    assert.equal(result.status, 500);
+    assert.equal(result.error.error.message, "failed at <path>");
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1130,7 +1395,7 @@ test("handleImageGeneration logs OpenAI-compatible upstream failures and transpo
   try {
     const failed = await handleImageGeneration({
       body: {
-        model: "openai/dall-e-3",
+        model: "openai/gpt-image-2",
         prompt: "broken upstream",
       },
       credentials: { apiKey: "image-key" },
@@ -1151,7 +1416,7 @@ test("handleImageGeneration logs OpenAI-compatible upstream failures and transpo
   try {
     const errored = await handleImageGeneration({
       body: {
-        model: "openai/dall-e-3",
+        model: "openai/gpt-image-2",
         prompt: "transport issue",
       },
       credentials: { apiKey: "image-key" },
@@ -1468,5 +1733,215 @@ test("handleImageGeneration normalizes Imagen3 single-image payloads and non-ok 
     } else {
       delete IMAGE_PROVIDERS.imagen3;
     }
+  }
+});
+
+const { extractImageGenerationCalls } = await import("../../open-sse/handlers/imageGeneration.ts");
+
+function buildCodexSSE(items) {
+  const frames = items.map((item) => JSON.stringify({ type: "response.output_item.done", item }));
+  return frames.map((frame) => `event: response.output_item.done\ndata: ${frame}\n`).join("\n");
+}
+
+test("extractImageGenerationCalls pulls base64 PNG from image_generation_call output items", () => {
+  const sse = buildCodexSSE([
+    {
+      type: "image_generation_call",
+      id: "ig_1",
+      status: "completed",
+      revised_prompt: "a small kitten",
+      result: "aGVsbG8=",
+    },
+  ]);
+  const calls = extractImageGenerationCalls(sse);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].b64, "aGVsbG8=");
+  assert.equal(calls[0].revisedPrompt, "a small kitten");
+});
+
+test("extractImageGenerationCalls ignores unrelated events and malformed lines", () => {
+  const sse = [
+    "event: response.in_progress",
+    `data: ${JSON.stringify({ type: "response.in_progress" })}`,
+    "",
+    "data: not-json",
+    "",
+    "event: response.output_item.done",
+    `data: ${JSON.stringify({
+      type: "response.output_item.done",
+      item: { type: "message", role: "assistant", content: [] },
+    })}`,
+    "",
+    "data: [DONE]",
+  ].join("\n");
+  assert.deepEqual(extractImageGenerationCalls(sse), []);
+});
+
+test("handleImageGeneration routes codex image requests through /responses with image_generation tool", async () => {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (url, options = {}) => {
+    captured = {
+      url: String(url),
+      headers: options.headers,
+      body: JSON.parse(String(options.body || "{}")),
+    };
+    const sse = buildCodexSSE([
+      {
+        type: "image_generation_call",
+        id: "ig_1",
+        status: "completed",
+        revised_prompt: "happy red kitten",
+        result: "a2l0dGVu",
+      },
+    ]);
+    return new Response(sse, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+
+  try {
+    const result = await handleImageGeneration({
+      body: {
+        model: "codex/gpt-5.4",
+        prompt: "Draw a happy red kitten",
+        response_format: "b64_json",
+      },
+      credentials: {
+        accessToken: "codex-token",
+        providerSpecificData: { workspaceId: "acct-123" },
+      },
+      log: null,
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(captured.url, "https://chatgpt.com/backend-api/codex/responses");
+    assert.equal(captured.headers.Authorization, "Bearer codex-token");
+    assert.equal(captured.headers["chatgpt-account-id"], "acct-123");
+    assert.equal(captured.body.model, "gpt-5.4");
+    assert.equal(captured.body.stream, true);
+    assert.equal(captured.body.store, false);
+    assert.deepEqual(captured.body.tools, [{ type: "image_generation", output_format: "png" }]);
+    assert.equal(captured.body.input[0].role, "user");
+    assert.equal(captured.body.input[0].content[0].text, "Draw a happy red kitten");
+    assert.equal(result.data.data[0].b64_json, "a2l0dGVu");
+    assert.equal(result.data.data[0].revised_prompt, "happy red kitten");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration (codex) returns a data URL when response_format is not b64_json", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    const sse = buildCodexSSE([
+      { type: "image_generation_call", id: "ig_2", status: "completed", result: "YWJjZA==" },
+    ]);
+    return new Response(sse, { status: 200 });
+  };
+
+  try {
+    const result = await handleImageGeneration({
+      body: { model: "cx/gpt-5.4", prompt: "kitten" },
+      credentials: { accessToken: "codex-token" },
+      log: null,
+    });
+    assert.equal(result.success, true);
+    assert.equal(result.data.data[0].url, "data:image/png;base64,YWJjZA==");
+    assert.equal(result.data.data[0].b64_json, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration (codex) surfaces an error when no image_generation_call is emitted", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    const sse = buildCodexSSE([
+      { type: "message", role: "assistant", content: [{ type: "output_text", text: "hi" }] },
+    ]);
+    return new Response(sse, { status: 200 });
+  };
+
+  try {
+    const result = await handleImageGeneration({
+      body: { model: "codex/gpt-5.4", prompt: "kitten" },
+      credentials: { accessToken: "codex-token" },
+      log: null,
+    });
+    assert.equal(result.success, false);
+    assert.equal(result.status, 502);
+    assert.match(result.error, /image_generation_call/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration (codex) propagates upstream HTTP errors", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response("upstream boom", { status: 403, headers: { "content-type": "text/plain" } });
+
+  try {
+    const result = await handleImageGeneration({
+      body: { model: "codex/gpt-5.4", prompt: "kitten" },
+      credentials: { accessToken: "codex-token" },
+      log: null,
+    });
+    assert.equal(result.success, false);
+    assert.equal(result.status, 403);
+    assert.match(result.error, /upstream boom/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("handleImageGeneration (codex) forwards size and maps GPT-Image quality to hosted tool config", async () => {
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (_url, options = {}) => {
+    captured = JSON.parse(String(options.body || "{}"));
+    const sse = buildCodexSSE([
+      { type: "image_generation_call", id: "ig_1", status: "completed", result: "YWJj" },
+    ]);
+    return new Response(sse, { status: 200 });
+  };
+
+  try {
+    await handleImageGeneration({
+      body: {
+        model: "codex/gpt-5.4",
+        prompt: "kitten",
+        size: "1024x1792",
+        quality: "hd",
+      },
+      credentials: { accessToken: "codex-token" },
+      log: null,
+    });
+    assert.deepEqual(captured.tools, [
+      {
+        type: "image_generation",
+        output_format: "png",
+        size: "1024x1792",
+        quality: "high",
+      },
+    ]);
+
+    await handleImageGeneration({
+      body: { model: "codex/gpt-5.4", prompt: "kitten", quality: "standard" },
+      credentials: { accessToken: "codex-token" },
+      log: null,
+    });
+    assert.equal(captured.tools[0].quality, "medium");
+
+    await handleImageGeneration({
+      body: { model: "codex/gpt-5.4", prompt: "kitten" },
+      credentials: { accessToken: "codex-token" },
+      log: null,
+    });
+    assert.deepEqual(captured.tools, [{ type: "image_generation", output_format: "png" }]);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });

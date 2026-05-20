@@ -7,9 +7,12 @@ import { ALIAS_TO_ID } from "@/shared/constants/providers";
 import { pickMaskedDisplayValue, pickDisplayValue } from "@/shared/utils/maskEmail";
 import useEmailPrivacyStore from "@/store/emailPrivacyStore";
 import dynamic from "next/dynamic";
+import Editor from "@/shared/components/MonacoEditor";
 
-const Editor = dynamic(() => import("@monaco-editor/react"), { ssr: false });
 const SearchPlayground = dynamic(() => import("./SearchPlayground"), {
+  ssr: false,
+});
+const ChatPlayground = dynamic(() => import("./ChatPlayground"), {
   ssr: false,
 });
 
@@ -187,6 +190,7 @@ export default function PlaygroundPage() {
   // Get translated endpoint options
   const endpointOptions = useMemo(
     () => [
+      { value: "conversational", label: "Chat (Conversational)" },
       { value: "chat", label: t("endpointOptions.chat") },
       { value: "responses", label: t("endpointOptions.responses") },
       { value: "images", label: t("endpointOptions.images") },
@@ -223,10 +227,19 @@ export default function PlaygroundPage() {
   const [uploadedImages, setUploadedImages] = useState<string[]>([]); // base64 URIs for vision
 
   const isSearchEndpoint = selectedEndpoint === "search";
+  const isConversationalEndpoint = selectedEndpoint === "conversational";
   const isTranscriptionEndpoint = selectedEndpoint === "transcription";
   const isChatEndpoint = selectedEndpoint === "chat";
   const isImageEndpoint = selectedEndpoint === "images";
   const supportsVision = isChatEndpoint && isVisionModel(selectedModel);
+
+  useEffect(() => {
+    return () => {
+      if (audioUrl) {
+        URL.revokeObjectURL(audioUrl);
+      }
+    };
+  }, [audioUrl]);
 
   // Load connections for a given provider — filtered from allConnections
   const providerConnections = allConnections.filter((c) => {
@@ -246,6 +259,7 @@ export default function PlaygroundPage() {
 
         const providerSet = new Set<string>();
         modelList.forEach((m) => {
+          if (typeof m?.id !== "string") return;
           const parts = m.id.split("/");
           if (parts.length >= 2) providerSet.add(parts[0]);
         });
@@ -257,7 +271,9 @@ export default function PlaygroundPage() {
           setSelectedProvider(providerOpts[0].value);
         }
       })
-      .catch(() => {});
+      .catch((err) => {
+        console.error("[playground] Failed to load models:", err);
+      });
 
     // Fetch ALL connections (once)
     fetch("/api/providers/client")
@@ -278,9 +294,18 @@ export default function PlaygroundPage() {
       .catch(() => {});
   }, []);
 
-  const filteredModels = models
-    .filter((m) => !selectedProvider || m.id.startsWith(selectedProvider + "/"))
-    .map((m) => ({ value: m.id, label: m.id }));
+  const filteredModels = (() => {
+    const seen = new Set<string>();
+    const out: Array<{ value: string; label: string }> = [];
+    for (const m of models) {
+      if (typeof m?.id !== "string") continue;
+      if (selectedProvider && !m.id.startsWith(selectedProvider + "/")) continue;
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      out.push({ value: m.id, label: m.id });
+    }
+    return out;
+  })();
 
   const generateDefaultBody = (endpoint: string, model: string) => {
     const template = { ...DEFAULT_BODIES[endpoint] };
@@ -294,7 +319,9 @@ export default function PlaygroundPage() {
     setSelectedProvider(newProvider);
     setSelectedConnection("");
     const providerModels = models
-      .filter((m) => !newProvider || m.id.startsWith(newProvider + "/"))
+      .filter(
+        (m) => typeof m?.id === "string" && (!newProvider || m.id.startsWith(newProvider + "/"))
+      )
       .map((m) => m.id);
     const firstModel = providerModels[0] || "";
     setSelectedModel(firstModel);
@@ -504,7 +531,7 @@ export default function PlaygroundPage() {
           </div>
 
           {/* Provider — hidden in search mode */}
-          {!isSearchEndpoint && (
+          {!isSearchEndpoint && !isConversationalEndpoint && (
             <div className="flex-1 w-full">
               <label className="block text-xs font-medium text-text-muted mb-1.5 uppercase tracking-wider">
                 {t("provider")}
@@ -519,7 +546,7 @@ export default function PlaygroundPage() {
           )}
 
           {/* Model — hidden in search mode */}
-          {!isSearchEndpoint && (
+          {!isSearchEndpoint && !isConversationalEndpoint && (
             <div className="flex-1 w-full">
               <label className="block text-xs font-medium text-text-muted mb-1.5 uppercase tracking-wider">
                 {t("model")}
@@ -534,7 +561,7 @@ export default function PlaygroundPage() {
           )}
 
           {/* Account/Key — always shown when provider is selected */}
-          {!isSearchEndpoint && (
+          {!isSearchEndpoint && !isConversationalEndpoint && (
             <div className="flex-1 w-full">
               <label className="block text-xs font-medium text-text-muted mb-1.5 uppercase tracking-wider">
                 {t("accountKey")}
@@ -561,7 +588,7 @@ export default function PlaygroundPage() {
           )}
 
           {/* Send Button — hidden in search mode (SearchPlayground has its own) */}
-          {!isSearchEndpoint && (
+          {!isSearchEndpoint && !isConversationalEndpoint && (
             <div className="shrink-0">
               {loading ? (
                 <Button icon="stop" variant="secondary" onClick={handleCancel}>
@@ -584,9 +611,27 @@ export default function PlaygroundPage() {
         </div>
       </Card>
 
-      {/* Search mode — isolated sub-component */}
+      {/* Isolated sub-components */}
       {isSearchEndpoint ? (
         <SearchPlayground />
+      ) : isConversationalEndpoint ? (
+        <ChatPlayground
+          selectedProvider={selectedProvider}
+          selectedModel={selectedModel}
+          selectedConnection={selectedConnection}
+          models={models}
+          providers={providers}
+          providerConnections={providerConnections}
+          onProviderChange={handleProviderChange}
+          onModelChange={handleModelChange}
+          onConnectionChange={setSelectedConnection}
+          noAccountsString={t("noAccounts")}
+          autoAccountsString={
+            providerConnections.length > 0
+              ? t("autoAccounts", { count: providerConnections.length })
+              : ""
+          }
+        />
       ) : (
         <>
           {/* File Upload Zone — shown for transcription and vision models */}

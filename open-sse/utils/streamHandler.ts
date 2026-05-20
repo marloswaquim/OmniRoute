@@ -1,4 +1,10 @@
+import { trackPendingRequest } from "@/lib/usageDb";
+import { FORMATS } from "../translator/formats.ts";
+
 // Stream handler with disconnect detection - shared for all providers
+
+const PENDING_REQUEST_CLEARED_MARKER = "__omniroutePendingRequestCleared";
+const DISCONNECT_ABORT_DELAY_MS = 2_000;
 
 type StreamDisconnectEvent = {
   reason: string;
@@ -10,9 +16,41 @@ type StreamControllerOptions = {
   log?: unknown;
   provider?: string;
   model?: string;
+  connectionId?: string | null;
+  clientResponseFormat?: string | null;
 };
 
 type StreamController = ReturnType<typeof createStreamController>;
+
+function isResponsesClientFormat(clientResponseFormat?: string | null): boolean {
+  return (
+    clientResponseFormat === FORMATS.OPENAI_RESPONSES ||
+    clientResponseFormat === FORMATS.OPENAI_RESPONSE
+  );
+}
+
+function responsesErrorType(statusCode: number): string {
+  if (statusCode === 429) return "rate_limit_error";
+  if (statusCode === 401 || statusCode === 403) return "authentication_error";
+  if (statusCode >= 400 && statusCode < 500) return "invalid_request_error";
+  return "server_error";
+}
+
+function responsesErrorCode(statusCode: number): string {
+  if (statusCode === 429) return "rate_limit_exceeded";
+  if (statusCode === 401) return "invalid_authentication";
+  if (statusCode === 403) return "permission_denied";
+  if (statusCode >= 400 && statusCode < 500) return "bad_request";
+  return "server_error";
+}
+
+function claudeErrorType(statusCode: number): string {
+  if (statusCode === 429) return "rate_limit_error";
+  if (statusCode === 401) return "authentication_error";
+  if (statusCode === 403) return "permission_error";
+  if (statusCode >= 400 && statusCode < 500) return "invalid_request_error";
+  return "api_error";
+}
 
 // Get HH:MM:SS timestamp
 function getTimeString() {
@@ -38,11 +76,14 @@ export function createStreamController({
   log,
   provider,
   model,
+  connectionId,
+  clientResponseFormat,
 }: StreamControllerOptions = {}) {
   const abortController = new AbortController();
   const startTime = Date.now();
   let disconnected = false;
   let abortTimeout: ReturnType<typeof setTimeout> | null = null;
+  let pendingRequestCleared = false;
 
   const logStream = (status) => {
     const duration = Date.now() - startTime;
@@ -50,6 +91,24 @@ export function createStreamController({
     console.log(
       `[${getTimeString()}] 🌊 [STREAM] ${p} | ${model || "unknown"} | ${duration}ms | ${status}`
     );
+  };
+
+  const clearPendingRequest = (error?: unknown) => {
+    if (pendingRequestCleared) return;
+    if (
+      error &&
+      typeof error === "object" &&
+      (error as Record<string, unknown>)[PENDING_REQUEST_CLEARED_MARKER] === true
+    ) {
+      pendingRequestCleared = true;
+      return;
+    }
+
+    pendingRequestCleared = true;
+    if (!model && !provider && !connectionId) return;
+    try {
+      trackPendingRequest(model || "", provider || "", connectionId ?? null, false);
+    } catch {}
   };
 
   return {
@@ -65,10 +124,14 @@ export function createStreamController({
 
       logStream(`disconnect: ${reason}`);
 
+      // Decrement pending request counter — the TransformStream flush() won't
+      // fire when the client aborts mid-stream, so we must clean up here.
+      clearPendingRequest();
+
       // Delay abort to allow cleanup
       abortTimeout = setTimeout(() => {
         abortController.abort();
-      }, 500);
+      }, DISCONNECT_ABORT_DELAY_MS);
 
       onDisconnect?.({ reason, duration: Date.now() - startTime });
     },
@@ -93,6 +156,8 @@ export function createStreamController({
         abortTimeout = null;
       }
 
+      clearPendingRequest(error);
+
       if (error instanceof Error && error.name === "AbortError") {
         logStream("aborted");
         return;
@@ -106,7 +171,65 @@ export function createStreamController({
     },
 
     abort: () => abortController.abort(),
+    clientResponseFormat,
   };
+}
+
+function buildStreamErrorChunks(
+  errorMsg: string,
+  statusCode: number,
+  clientResponseFormat?: string | null
+) {
+  const encoder = new TextEncoder();
+  if (isResponsesClientFormat(clientResponseFormat)) {
+    const errorEvent = {
+      type: "response.failed",
+      response: {
+        id: null,
+        status: "failed",
+        error: {
+          message: errorMsg,
+          type: responsesErrorType(statusCode),
+          code: responsesErrorCode(statusCode),
+        },
+      },
+    };
+
+    return [encoder.encode(`event: response.failed\ndata: ${JSON.stringify(errorEvent)}\n\n`)];
+  }
+
+  if (clientResponseFormat === FORMATS.CLAUDE) {
+    const errorEvent = {
+      type: "error",
+      error: {
+        type: claudeErrorType(statusCode),
+        message: errorMsg,
+      },
+    };
+
+    return [encoder.encode(`event: error\ndata: ${JSON.stringify(errorEvent)}\n\n`)];
+  }
+
+  const errorEvent = {
+    object: "chat.completion.chunk",
+    choices: [
+      {
+        index: 0,
+        delta: {},
+        finish_reason: "error",
+      },
+    ],
+    error: {
+      message: errorMsg,
+      type: "upstream_error",
+      code: statusCode,
+    },
+  };
+
+  return [
+    encoder.encode(`data: ${JSON.stringify(errorEvent)}\n\n`),
+    encoder.encode(`data: [DONE]\n\n`),
+  ];
 }
 
 /**
@@ -143,25 +266,13 @@ export function createDisconnectAwareStream(transformStream, streamController) {
             ? Number((error as { statusCode?: unknown }).statusCode) || 500
             : 500;
 
-        const errorEvent = {
-          object: "chat.completion.chunk",
-          choices: [
-            {
-              index: 0,
-              delta: {},
-              finish_reason: "error",
-            },
-          ],
-          error: {
-            message: errorMsg,
-            type: "upstream_error",
-            code: statusCode,
-          },
-        };
-
-        const encoder = new TextEncoder();
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(errorEvent)}\n\n`));
-        controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+        for (const chunk of buildStreamErrorChunks(
+          errorMsg,
+          statusCode,
+          streamController.clientResponseFormat
+        )) {
+          controller.enqueue(chunk);
+        }
 
         controller.close();
       }
@@ -170,7 +281,9 @@ export function createDisconnectAwareStream(transformStream, streamController) {
     cancel(reason) {
       streamController.handleDisconnect(reason || "cancelled");
       reader.cancel();
-      writer.abort();
+      setTimeout(() => {
+        writer.abort();
+      }, DISCONNECT_ABORT_DELAY_MS).unref?.();
     },
   });
 }

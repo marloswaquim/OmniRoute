@@ -25,10 +25,10 @@ test("tool sanitization: coerces numeric JSON Schema fields recursively", () => 
   };
 
   const result = coerceSchemaNumericFields(schema);
-  assert.equal(result.properties.count.minimum, 1);
-  assert.equal(result.properties.count.maximum, 10);
-  assert.equal(result.properties.items.minItems, 2);
-  assert.equal(result.properties.items.items.minLength, 3);
+  assert.equal((result as any).properties.count.minimum, 1);
+  (assert as any).equal((result as any).properties.count.maximum, 10);
+  (assert as any).equal((result as any).properties.items.minItems, 2);
+  assert.equal((result as any).properties.items.items.minLength, 3);
 });
 
 test("tool sanitization: preserves non-numeric JSON Schema strings", () => {
@@ -40,7 +40,7 @@ test("tool sanitization: preserves non-numeric JSON Schema strings", () => {
   };
 
   const result = coerceSchemaNumericFields(schema);
-  assert.equal(result.properties.value.minimum, "abc");
+  assert.equal((result as any).properties.value.minimum, "abc");
 });
 
 test("tool sanitization: normalizes descriptions across OpenAI, Claude, and Gemini shapes", () => {
@@ -57,9 +57,9 @@ test("tool sanitization: normalizes descriptions across OpenAI, Claude, and Gemi
     functionDeclarations: [{ name: "sum", description: false, parameters: {} }],
   });
 
-  assert.equal(openAITool.function.description, "");
-  assert.equal(claudeTool.description, "42");
-  assert.equal(geminiTool.functionDeclarations[0].description, "false");
+  (assert as any).equal(((openAITool as any).function as any).description, "");
+  assert.equal((claudeTool as any).description, "42");
+  assert.equal((geminiTool as any).functionDeclarations[0].description, "false");
 });
 
 test("tool sanitization: coerces schemas and descriptions in tool arrays", () => {
@@ -159,8 +159,12 @@ test("tool sanitization: injects empty reasoning_content only for DeepSeek tool-
     },
   ];
 
-  const deepseekMessages = injectEmptyReasoningContentForToolCalls(messages, "deepseek");
-  const openaiMessages = injectEmptyReasoningContentForToolCalls(messages, "openai");
+  const deepseekMessages = injectEmptyReasoningContentForToolCalls(
+    messages,
+    "deepseek",
+    "deepseek-v4-flash"
+  );
+  const openaiMessages = injectEmptyReasoningContentForToolCalls(messages, "openai", "gpt-4o");
 
   assert.equal(deepseekMessages[1].reasoning_content, "");
   assert.equal(openaiMessages[1].reasoning_content, undefined);
@@ -170,7 +174,7 @@ test("translateRequest injects reasoning_content for DeepSeek assistant tool cal
   const translated = translateRequest(
     FORMATS.OPENAI,
     FORMATS.OPENAI,
-    "deepseek-reasoner",
+    "deepseek-v4-flash",
     {
       messages: [
         { role: "user", content: "hello" },

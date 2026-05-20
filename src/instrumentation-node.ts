@@ -13,7 +13,7 @@ function getRandomBytes(byteLength: number): Uint8Array {
 }
 
 function toBase64(bytes: Uint8Array): string {
-  return btoa(String.fromCharCode(...bytes));
+  return btoa(String.fromCodePoint(...bytes));
 }
 
 function toHex(bytes: Uint8Array): string {
@@ -130,14 +130,21 @@ export async function registerNodejs(): Promise<void> {
     console.log(
       `[STARTUP] Cloud/model sync background bootstrap ${cloudSyncInitialized ? "initialized" : "skipped"}`
     );
+    const { initBatchProcessor } = await import("@omniroute/open-sse/services/batchProcessor");
+    initBatchProcessor();
+    console.log("[STARTUP] Batch processor started");
   }
 
   try {
-    const [{ migrateCodexConnectionDefaultsFromLegacySettings }, { seedDefaultModelAliases }] =
-      await Promise.all([
-        import("@/lib/providers/codexConnectionDefaults"),
-        import("@/lib/modelAliasSeed"),
-      ]);
+    const [
+      { migrateCodexConnectionDefaultsFromLegacySettings },
+      { startSessionAccountAffinityCleanup },
+      { seedDefaultModelAliases },
+    ] = await Promise.all([
+      import("@/lib/providers/codexConnectionDefaults"),
+      import("@/lib/db/sessionAccountAffinity"),
+      import("@/lib/modelAliasSeed"),
+    ]);
     let settings = await getSettings();
     const passwordState = await ensurePersistentManagementPasswordHash({
       logger: console,
@@ -158,6 +165,7 @@ export async function registerNodejs(): Promise<void> {
     console.log(
       `[STARTUP] Model alias seed: applied=${seededModelAliases.applied.length}, skipped=${seededModelAliases.skipped.length}, failed=${seededModelAliases.failed.length}`
     );
+    startSessionAccountAffinityCleanup();
 
     const migration = await migrateCodexConnectionDefaultsFromLegacySettings();
     if (migration.migrated) {

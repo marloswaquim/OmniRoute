@@ -16,6 +16,13 @@ import { getAccessToken } from "@omniroute/open-sse/services/tokenRefresh.ts";
 import { saveCallLog } from "@/lib/usageDb";
 import { logProxyEvent } from "@/lib/proxyLogger";
 import { runWithProxyContext } from "@omniroute/open-sse/utils/proxyFetch.ts";
+import {
+  buildGitLabOAuthEndpoints,
+  isGitLabDirectAccessDisabled,
+  resolveGitLabOAuthBaseUrl,
+} from "@/lib/oauth/gitlab";
+import { providerAllowsOptionalApiKey } from "@/shared/constants/providers";
+import { removeConnectionHealth } from "@omniroute/open-sse/services/apiKeyRotator.ts";
 
 // OAuth provider test endpoints
 const OAUTH_TEST_CONFIG = {
@@ -52,6 +59,15 @@ const OAUTH_TEST_CONFIG = {
     authPrefix: "Bearer ",
     extraHeaders: { "User-Agent": "OmniRoute", Accept: "application/vnd.github+json" },
   },
+  "gitlab-duo": {
+    getUrl: (connection: any) =>
+      buildGitLabOAuthEndpoints(resolveGitLabOAuthBaseUrl(connection?.providerSpecificData))
+        .directAccessUrl,
+    method: "POST",
+    authHeader: "Authorization",
+    authPrefix: "Bearer ",
+    refreshable: true,
+  },
   qwen: {
     // DashScope (previously portal.qwen.ai) /v1/models might return 404 or auth issues.
     // Use checkExpiry instead — actual connectivity is validated via real requests.
@@ -81,13 +97,13 @@ const OAUTH_TEST_CONFIG = {
     checkExpiry: true,
     refreshable: true,
   },
+  "amazon-q": {
+    checkExpiry: true,
+    refreshable: true,
+  },
 };
 
-const CLI_RUNTIME_PROVIDER_MAP = {
-  cline: "cline",
-  kilocode: "kilo",
-  qoder: "qoder",
-};
+import { CLI_RUNTIME_PROVIDER_MAP } from "./cliRuntimeProviderMap";
 
 /** POST body is optional; when present, only known fields are validated. */
 const providerConnectionTestBodySchema = z.object({
@@ -201,9 +217,39 @@ function classifyFailure({
   );
 }
 
+function hasQoderToken(connection: any): boolean {
+  if (typeof connection?.apiKey === "string" && connection.apiKey.trim().length > 0) return true;
+  const psd = connection?.providerSpecificData;
+  if (psd && typeof psd === "object") {
+    const pat = (psd as any).personalAccessToken ?? (psd as any).pat ?? (psd as any).accessToken;
+    if (typeof pat === "string" && pat.trim().length > 0) return true;
+  }
+  return false;
+}
+
 async function getProviderRuntimeStatus(connection: any) {
   const provider = typeof connection?.provider === "string" ? connection.provider : "";
   let toolId = CLI_RUNTIME_PROVIDER_MAP[provider];
+
+  // Issue #2247: detect Qoder in OAuth/CLI-flavored mode with a PAT pasted
+  // BEFORE the CLI-runtime early-return below, otherwise the disambiguation
+  // message never reaches the user (they keep seeing the generic "CLI not
+  // installed" + 401 cascade). For Qoder, this short-circuits the runtime
+  // check entirely with an actionable diagnosis.
+  const isQoderOauthWithToken =
+    provider === "qoder" && connection?.authType !== "apikey" && hasQoderToken(connection);
+  if (isQoderOauthWithToken) {
+    const message =
+      "Qoder OAuth/Local CLI mode is selected but a Personal Access Token is stored on this connection. Switch this connection to API Key auth to use the PAT directly.";
+    return {
+      installed: false,
+      runnable: false,
+      reason: "qoder_oauth_with_token",
+      diagnosis: makeDiagnosis("runtime_error", "local", message, "qoder_oauth_with_token"),
+      error: message,
+    };
+  }
+
   if (provider === "qoder" && connection?.authType !== "apikey") {
     toolId = null;
   }
@@ -396,7 +442,8 @@ async function testOAuthConnection(connection: any) {
       ...config.extraHeaders,
     };
 
-    const res = await fetch(config.url, {
+    const url = typeof config.getUrl === "function" ? config.getUrl(connection) : config.url;
+    const res = await fetch(url, {
       method: config.method,
       headers,
     });
@@ -409,6 +456,19 @@ async function testOAuthConnection(connection: any) {
         newTokens,
         diagnosis: makeDiagnosis("ok", "upstream", null, null),
       };
+    }
+
+    if (connection.provider === "gitlab-duo") {
+      const gitlabText = await res.text();
+      if (isGitLabDirectAccessDisabled(res.status, gitlabText)) {
+        return {
+          valid: true,
+          error: null,
+          refreshed,
+          newTokens,
+          diagnosis: makeDiagnosis("ok", "upstream", null, null),
+        };
+      }
     }
 
     // If 401/403 and we haven't tried refresh yet, only attempt refresh
@@ -424,7 +484,7 @@ async function testOAuthConnection(connection: any) {
       const tokens = await refreshOAuthToken(connection);
       if (tokens) {
         // Retry with new token
-        const retryRes = await fetch(config.url, {
+        const retryRes = await fetch(url, {
           method: config.method,
           headers: {
             [config.authHeader]: `${config.authPrefix}${tokens.accessToken}`,
@@ -490,7 +550,8 @@ async function testOAuthConnection(connection: any) {
  * Test API key connection
  */
 async function testApiKeyConnection(connection: any) {
-  if (!connection.apiKey) {
+  const requiresApiKey = !providerAllowsOptionalApiKey(connection.provider);
+  if (requiresApiKey && !connection.apiKey) {
     const error = "Missing API key";
     return {
       valid: false,
@@ -616,6 +677,16 @@ export async function testSingleConnection(connectionId: string, validationModel
 
   if (result.valid) {
     updateData.backoffLevel = 0;
+
+    const psd = connection?.providerSpecificData as Record<string, unknown> | undefined;
+    updateData.providerSpecificData = {
+      ...(psd || {}),
+      apiKeyHealth: {},
+    };
+
+    try {
+      removeConnectionHealth(connectionId);
+    } catch {}
   }
 
   // If token was refreshed, update tokens in DB

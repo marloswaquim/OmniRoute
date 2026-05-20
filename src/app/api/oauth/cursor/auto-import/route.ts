@@ -86,7 +86,8 @@ function tryIdeAuth(): {
     };
   } catch (error) {
     db?.close();
-    return { found: false, error: `Failed to read database: ${(error as any).message}` };
+    console.error("Failed to read Cursor IDE database:", error);
+    return { found: false, error: "Failed to read database" };
   }
 }
 
@@ -99,7 +100,7 @@ function tryIdeAuth(): {
  * 🔒 Auth-guarded: requires JWT cookie or Bearer API key (finding #258-4).
  */
 export async function GET(request: Request) {
-  if (await isAuthRequired()) {
+  if (await isAuthRequired(request)) {
     if (!(await isAuthenticated(request))) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -132,7 +133,7 @@ export async function GET(request: Request) {
       error: "No Cursor credentials found. Install Cursor IDE or login with cursor-agent.",
     });
   } catch (error) {
-    console.log("Cursor auto-import error:", error);
-    return NextResponse.json({ found: false, error: (error as any).message }, { status: 500 });
+    console.error("Cursor auto-import error:", error);
+    return NextResponse.json({ found: false, error: "Internal server error" }, { status: 500 });
   }
 }
